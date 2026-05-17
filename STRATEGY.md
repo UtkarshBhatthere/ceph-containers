@@ -2,7 +2,8 @@
 
 > **Branch:** `claude/ceph-oci-strategy-review-86l4n`  
 > **Date:** May 2026  
-> **Scope:** Full competitive analysis of canonical/ceph-containers vs upstream ceph/ceph-container, with a prioritised roadmap to close gaps and assert strategic differentiation.
+> **Scope:** Full competitive analysis of canonical/ceph-containers vs the Ceph community container build (formerly ceph/ceph-container, now ceph/ceph `container/`), with a prioritised roadmap to close gaps and assert strategic differentiation.  
+> **⚠ Key finding:** `ceph/ceph-container` was **archived December 19, 2024**. All upstream container development moved into the main `ceph/ceph` repository. Canonical has a narrow window to fill the Ubuntu container vacuum.
 
 ---
 
@@ -24,11 +25,13 @@
 
 `canonical/ceph-containers` is a Rockcraft-based OCI image builder for Ceph targeting Ubuntu LTS, with first-class support for Cephadm and Rook. As of mid-2026 the project is **~2.5 years stale** (last commit September 2023), carries a PPA workaround, supports only `amd64`, and publishes a single, unversioned Ceph image.
 
-The upstream `ceph/ceph-container` project (Red Hat / Ceph community) ships multi-version, multi-arch, multi-distro images on a rolling release cadence, distributed from Quay.io and Docker Hub.
+**The upstream picture has fundamentally changed.** The dedicated `ceph/ceph-container` repository was **archived on December 19, 2024**. All container build assets migrated into the primary `ceph/ceph` monorepo under `container/` — a plain Containerfile per branch, shell scripts, and a Jenkins/Shaman pipeline. The base OS is CentOS Stream 9 (Reef, Squid) and Rocky Linux 10 (Tentacle). Docker Hub is frozen at v16 (no new pushes since 2021). Active releases are distributed from `quay.io/ceph/ceph` only.
+
+This creates a **strategic vacuum**: the Ceph community has no actively maintained, Ubuntu-native OCI image builder. Canonical is already positioned to fill it — if the project is modernised promptly.
 
 The canonical project has a genuine, defensible strategic position: Ubuntu provenance, LTS security guarantees, Rockcraft's hermetic builds, and the Canonical charm/snap ecosystem. None of this matters while the image is two major Ceph versions behind and lacks arm64 support.
 
-**The plan:** Ship a modern, multi-version, multi-arch Ceph ROCK image that matches upstream's version coverage, then beat it on Ubuntu-specific quality, security cadence, and Canonical toolchain integration.
+**The plan:** Modernise fast — ship Squid (19.x) and Tentacle (20.x) images immediately, add arm64, assert Ubuntu-native leadership, and become the definitive community alternative to the RHEL/CentOS-based upstream. The window is narrow: if another Ubuntu-based community project fills the vacuum first, the opportunity is lost.
 
 ---
 
@@ -74,44 +77,67 @@ test/deploy.py          ← Python script: single-node LXD/cephadm deployment
 
 ---
 
-## 3. Upstream Landscape — ceph/ceph-container
+## 3. Upstream Landscape — ceph/ceph (formerly ceph/ceph-container)
 
-### 3.1 Project Overview
+### 3.1 Project Overview — Key Status Change
 
-`ceph/ceph-container` is the canonical upstream OCI image project maintained by Red Hat and the broader Ceph community. It generates images consumed by Rook, Cephadm, and direct `docker run` usage.
+> **`ceph/ceph-container` was archived (read-only) on December 19, 2024.** All container build assets are now inside the primary `ceph/ceph` monorepo under the `container/` directory. There is no active standalone container repository.
 
-### 3.2 Key Characteristics
+The previous project produced `ceph/daemon-base` (runtime image) and `ceph/daemon` (with bash entrypoint scripts for ceph-ansible/ceph-nano). The new model is a single `Containerfile` per release branch inside `ceph/ceph`, built and published by a Jenkins/Shaman CI pipeline.
+
+### 3.2 Current Build Architecture (ceph/ceph `container/`)
+
+| File | Purpose |
+|------|---------|
+| `container/Containerfile` | Per-branch image definition |
+| `container/build.sh` | Build/push orchestration; driven by environment variables; uses `podman` |
+| `container/make-manifest-list.py` | Multi-arch manifest creation and `--promote` to production registry |
+
+Active branches (each has its own Containerfile):
+
+| Branch | Release | Status |
+|--------|---------|--------|
+| `main` | Tentacle v20.2.x | Current stable (released April 2026) |
+| `squid` | v19.2.x | Stable |
+| `reef` | v18.2.x | **Approaching EOL** |
+| `quincy` | v17.2.x | EOL |
+
+### 3.3 Key Characteristics
 
 | Dimension | Upstream approach |
 |-----------|-------------------|
-| **Build system** | GNU Make + Jinja2 templates; `Makefile` drives per-distro, per-version builds |
-| **Base images** | Ubuntu 22.04, CentOS Stream 9, openSUSE (distro matrix) |
-| **Ceph versions** | Pacific (EOL), Quincy (maintenance), Reef 18.x (LTS), Squid 19.x (stable) |
+| **Build system** | Shell scripts + Python (`build.sh`, `make-manifest-list.py`); **no Makefile** |
+| **Base images** | CentOS Stream 9 (reef, squid); Rocky Linux 10 (tentacle/main) — **no Ubuntu** |
 | **Architectures** | `amd64`, `arm64` |
-| **Registries** | `quay.io/ceph/ceph`, Docker Hub `ceph/ceph` |
-| **Tag scheme** | `v{ceph-version}` (e.g. `v18.2.4`), `v{major}` rolling, `latest` |
-| **Security** | Regular CVE rebuilds via Zuul CI; Ceph tracker issue integration |
-| **Entrypoint** | `entrypoint.sh` + `demo.sh`; no pebble |
-| **Testing** | Zuul-based; ceph-ansible, cephadm, Rook integration tests |
-| **Community** | 50+ contributors; releases tracked with Ceph point releases |
+| **Registries** | `quay.io/ceph/ceph` (active); Docker Hub `ceph/ceph` frozen at v16 since 2021 |
+| **Tag scheme** | `v{major}.{minor}.{patch}-{date}` (e.g. `v19.2.3-20250717`); `v{major}` rolling |
+| **Security** | Rebuilt within 24h of new Ceph package; Jenkins/Shaman pipeline |
+| **Entrypoint** | **No CMD/ENTRYPOINT defined** — orchestrators (cephadm, Rook) inject entrypoints |
+| **CI** | Jenkins + Jenkins Job Builder (JJB) in `ceph/ceph-build`; **not GitHub Actions** |
+| **Package source** | Shaman (https://shaman.ceph.com) for CI builds; download.ceph.com for releases |
+| **OSD flavors** | `default` and `crimson` (tech preview → more stable in Tentacle) |
 
-### 3.3 Upstream Strengths
+### 3.4 Upstream Strengths
 
-- Version matrix: every supported Ceph release has a tagged image within days of upstream release
-- Multi-distro: enterprise users on RHEL/CentOS get their preferred base
-- Arm64 support: covers edge, Raspberry Pi clusters, Graviton AWS nodes
-- Quay.io distribution: preferred by OpenShift/Kubernetes communities
-- Deep Zuul CI: pre-merge integration testing against real Ceph clusters
+- Near-daily rebuilds: images track Ceph point releases within 24 hours
+- Multi-arch: `amd64` + `arm64` manifest lists from day one of each release
+- Quay.io: preferred registry for OpenShift, Kubernetes, and RHEL-based environments
+- Jenkins/Shaman integration: deep pipeline to Ceph's own package build infrastructure
+- Crimson OSD image: separate experimental flavor for next-gen OSD users
 
-### 3.4 Upstream Weaknesses (Canonical's Opening)
+### 3.5 Upstream Weaknesses — Canonical's Strategic Opening
 
-- **No Ubuntu LTS security maintenance guarantees** — upstream Ubuntu images get packages but not the full Ubuntu Pro / ESM security pipeline
-- **No Rockcraft / hermetic builds** — supply chain provenance is weaker; no SBOM
-- **No pebble** — upstream has no OCI-native init integration
-- **No charm/snap ecosystem alignment** — Charmed Ceph, MicroCeph, and the broader Juju ecosystem have no upstream analog
-- **No Launchpad SRU alignment** — Ubuntu package fixes don't flow into upstream images predictably
-- **Distro sprawl** — maintaining Ubuntu + CentOS + openSUSE paths increases complexity and dilutes quality per distro
-- **No ROCK format** — ROCK images carry richer OCI metadata (base layer provenance, Pebble service definitions, etc.)
+| Weakness | Canonical's advantage |
+|----------|-----------------------|
+| **CentOS/Rocky Linux only** — no Ubuntu base | Ubuntu LTS, ESM, and Pro security pipeline are exclusive to Canonical |
+| **Archived standalone repo** — community confusion about where to find containers | A clearly maintained, standalone Ubuntu container repo fills the void |
+| **No Rockcraft / hermetic builds** — Containerfile + apt/dnf inside layers is non-reproducible | Rockcraft produces hermetic, bit-for-bit reproducible builds with SBOM |
+| **No Pebble** — no OCI-native process supervision | Pebble provides structured health checks, log routing, REST API |
+| **No charm/snap ecosystem** — no Juju, Charmed Ceph, or MicroCeph story | These are Canonical-exclusive adoption surfaces |
+| **Jenkins-based CI** — opaque, not community-forkable | GitHub Actions CI is accessible and forkable by any contributor |
+| **Docker Hub frozen at v16** — community users who try Docker Hub get stale images | Canonical can claim Docker Hub `canonical/ceph` and Quay.io presence |
+| **No Ubuntu LTS SRU alignment** — package security fixes don't flow predictably | Canonical controls the Ubuntu package lifecycle end-to-end |
+| **No SBOM or image signing** — no provenance story | SBOM + cosign signing are first-class in Rockcraft/GitHub ecosystem |
 
 ---
 
@@ -121,10 +147,11 @@ test/deploy.py          ← Python script: single-node LXD/cephadm deployment
 
 | Gap | Impact | Effort |
 |-----|--------|--------|
-| Missing Ceph Reef (18.x) image | HIGH — Reef is the current LTS; all new deployments use it | Medium |
-| Missing Ceph Squid (19.x) image | HIGH — stable release; Rook defaults changing | Medium |
-| amd64-only | HIGH — arm64 is now required for many k8s environments | Medium-High |
-| Ubuntu 22.04 only | MEDIUM — 24.04 Noble now provides longer lifecycle | Medium |
+| Missing Ceph Tentacle (20.x) image | CRITICAL — current stable release (April 2026); upstream at v20.2.1 | Medium |
+| Missing Ceph Squid (19.x) image | HIGH — stable release; many production deployments | Medium |
+| Missing Ceph Reef (18.x) image | HIGH — still in use; approaching EOL | Low-Medium |
+| amd64-only | HIGH — arm64 required for many k8s, edge, Graviton environments | Medium-High |
+| Ubuntu 22.04 only | MEDIUM — Noble (24.04) offers longer lifecycle and newer packages | Medium |
 | PPA workaround | MEDIUM — LP bug #2003704 resolved in Jammy updates; remove PPA | Low |
 | kubectl v1.27 EOL | MEDIUM — security risk for k8s users | Low |
 
@@ -139,32 +166,38 @@ test/deploy.py          ← Python script: single-node LXD/cephadm deployment
 | Stale CI action versions | LOW — minor, causes deprecation warnings | Low |
 | confd v0.16.0 deprecated | LOW — works but unmaintained | Low |
 
-### 4.3 Feature Parity Matrix (vs upstream)
+### 4.3 Feature Parity Matrix (vs upstream ceph/ceph `container/`)
 
 | Feature | This repo | Upstream |
 |---------|-----------|----------|
-| Ceph Pacific (EOL) | ❌ | ✅ (EOL images kept) |
-| Ceph Quincy | ❌ | ✅ |
-| Ceph Reef (LTS) | ❌ | ✅ |
-| Ceph Squid | ❌ | ✅ |
-| Ubuntu 22.04 base | ✅ | ✅ |
-| Ubuntu 24.04 base | ❌ | ❌ (not yet) |
-| CentOS Stream base | ❌ (by design) | ✅ |
+| Ceph Quincy (EOL) | ❌ | ✅ (archived) |
+| Ceph Reef (18.x, approaching EOL) | ❌ | ✅ |
+| Ceph Squid (19.x, stable) | ❌ | ✅ |
+| Ceph Tentacle (20.x, current stable) | ❌ | ✅ |
+| Ubuntu base | ✅ | ❌ (CentOS/Rocky only) |
+| Ubuntu 22.04 | ✅ | ❌ |
+| Ubuntu 24.04 | ❌ | ❌ |
+| CentOS Stream 9 base | ❌ (by design) | ✅ |
+| Rocky Linux 10 base | ❌ (by design) | ✅ (Tentacle) |
 | amd64 | ✅ | ✅ |
 | arm64 | ❌ | ✅ |
 | GHCR | ✅ | ❌ |
-| Quay.io | ❌ | ✅ |
-| Docker Hub | ❌ | ✅ |
-| Version-pinned tags | ❌ | ✅ |
-| Pebble entrypoint | ✅ (experimental) | ❌ |
-| Rockcraft / hermetic builds | ✅ | ❌ |
+| Quay.io | ❌ | ✅ (`quay.io/ceph/ceph`) |
+| Docker Hub (active) | ❌ | ❌ (frozen at v16) |
+| Version-pinned tags | ❌ | ✅ (`v19.2.3-20250717`) |
+| Defined OCI entrypoint | ✅ (pebble, experimental) | ❌ (no CMD defined) |
+| Pebble process supervision | ✅ (experimental) | ❌ |
+| Rockcraft / hermetic builds | ✅ | ❌ (Containerfile) |
 | SBOM / provenance | partial (Rockcraft) | ❌ |
-| CVE rebuild automation | ❌ | ✅ (Zuul) |
-| Cephadm CI | ✅ | partial |
-| Rook CI | ✅ | ✅ |
-| Prometheus/Loki/AM (Rook) | ❌ | ✅ |
+| Image signing (cosign) | ❌ | ❌ |
+| CVE rebuild automation | ❌ | ✅ (<24h rebuild on new pkg) |
+| GitHub Actions CI | ✅ | ❌ (Jenkins) |
+| Cephadm CI | ✅ | ❌ |
+| Rook CI | ✅ | ❌ |
+| Prometheus/Loki/AM (Rook) | ❌ | n/a (no defined entrypoint) |
 | Charm/snap ecosystem | ✅ (potential) | ❌ |
 | Ubuntu Pro / ESM integration | ✅ (potential) | ❌ |
+| Crimson OSD flavor | ❌ | ✅ (Tentacle) |
 
 ---
 
@@ -194,20 +227,24 @@ Meet users where they are: publish to GHCR, Quay.io, and Docker Hub simultaneous
 
 ### Phase 1 — Foundation (Weeks 1–4)
 
-**Goal:** Unblock immediate blockers; produce a usable Reef image.
+**Goal:** Unblock immediate blockers; produce usable Squid and Tentacle images on Ubuntu 24.04.
+
+> Reef (18.x) is approaching EOL — it is not the priority target. Ship Squid (19.x) first as the stable release and Tentacle (20.x) as the current stable. Add Reef as a best-effort backport if packages are available on Noble.
 
 | Task | Owner area | Notes |
 |------|-----------|-------|
-| Remove PPA dependency | Build | LP bug #2003704 is fixed in jammy-updates; switch to `noble` or update package list |
-| Upgrade base to Ubuntu 24.04 (Noble) | Build | `base: ubuntu:24.04`; verify all packages available |
-| Add Ceph Reef 18.x package list | Build | Pin to current LTS point release; source from noble/jammy |
-| Add Ceph version to `rockcraft.yaml` version field | Build | `version: '18.2.x'`; drives image tag |
-| Fix image tag scheme | CI | Tag as `{ceph-major}.{ceph-minor}` + branch/sha for rolling |
+| Remove PPA dependency | Build | LP bug #2003704 fixed in jammy-updates; migrate to Noble packages |
+| Upgrade base to Ubuntu 24.04 (Noble) | Build | `base: ubuntu:24.04`; verify Ceph packages available from Ubuntu archives |
+| Add Ceph Squid (19.x) package list | Build | Pin to current stable point release; source from noble |
+| Add Ceph Tentacle (20.x) package list | Build | Current upstream stable (v20.2.1); verify Noble availability |
+| Add Ceph version to `rockcraft.yaml` version field | Build | `version: '19.2.x'`; drives image tag |
+| Fix image tag scheme | CI | Tag as `v{ceph-version}` (e.g. `v19.2.3`) + `v{major}` rolling; match upstream convention |
 | Update CI actions to v4 | CI | `actions/checkout@v4`, `upload-artifact@v4`, etc. |
-| Update kubectl to v1.29+ | Build | Match current k8s stable |
-| Push to GHCR with versioned tags | CI | `ghcr.io/canonical/ceph:18.2.4`, `:18`, `:latest` |
+| Update kubectl to v1.31+ | Build | Match current k8s stable |
+| Push to GHCR with versioned tags | CI | `ghcr.io/canonical/ceph:v19.2.3`, `:v19`, `:latest` |
+| Rename table of contents / README to reflect new scope | Docs | Prominently note Ubuntu-only, Rockcraft-based, and distinct from archived upstream |
 
-**Exit criteria:** A tagged `18.2.x` Reef image passes all existing CI tests and is pushed to GHCR.
+**Exit criteria:** Tagged `v19.2.x` (Squid) and `v20.2.x` (Tentacle) images pass all existing CI tests and are pushed to GHCR.
 
 ---
 
@@ -313,13 +350,14 @@ Ubuntu developers reaching for `apt install ceph` are one conceptual step from `
 
 | Risk | Likelihood | Impact | Mitigation |
 |------|-----------|--------|------------|
+| Ceph Squid/Tentacle packages not yet in Ubuntu Noble | Medium | High | Check packages.ubuntu.com; engage Ubuntu Ceph maintainers; track noble-proposed / backports |
 | Rockcraft toolchain immaturity | Medium | High | Pin to stable rockcraft channel; maintain fallback Dockerfile |
-| PPA / package availability delays | Medium | High | Engage Ubuntu Ceph package maintainers; track noble-proposed |
-| arm64 build times on GitHub Actions | High | Medium | Use Canonical self-hosted arm64 runners or cross-compilation |
-| Upstream ceph/ceph-container adds Ubuntu Pro support | Low | High | Move faster on Phases 3–4; focus on Rockcraft/SBOM uniqueness |
-| Resource / maintainer bandwidth | High | High | Define minimal viable maintainer surface (Phase 1 only needs 1 engineer) |
-| confd deprecation | Low | Low | Replace with native env-var config or go-confd fork in Phase 2 |
+| arm64 build times on GitHub Actions | High | Medium | Use Canonical self-hosted arm64 runners or cross-compilation via QEMU |
+| Another project fills the Ubuntu Ceph container vacuum first | Medium | High | Move fast on Phase 1; claim Docker Hub and Quay.io `canonical/ceph` namespaces now |
+| Resource / maintainer bandwidth | High | High | Phase 1 needs only 1 engineer; scope tightly before expanding |
+| confd v0.16.0 deprecated | Low | Low | Replace with native env-var config or go-confd fork in Phase 2 |
 | Rook project changes Ceph image expectations | Medium | Medium | Track Rook changelog; add Rook release matrix to CI |
+| cephadm defaults to upstream Ceph images | Medium | Medium | Contribute to cephadm docs to list Canonical image as Ubuntu alternative |
 
 ---
 
@@ -373,22 +411,39 @@ Ubuntu developers reaching for `apt install ceph` are one conceptual step from `
 
 | Release | Codename | Status | EOL |
 |---------|----------|--------|-----|
+| 15.x | Octopus | EOL | — |
 | 16.x | Pacific | EOL | Jun 2023 |
-| 17.x | Quincy | Maintenance | Jun 2024 |
-| 18.x | Reef | **LTS** | ~2026 |
-| 19.x | Squid | Stable | ~2026 |
-| 20.x | Tentacle | Development (2025+) | TBD |
+| 17.x | Quincy | EOL | 2024 |
+| 18.x | Reef | Maintenance / approaching EOL | ~2026 |
+| 19.x | Squid | **Stable** | ~2027 |
+| 20.x | Tentacle | **Current Stable** (v20.2.1, Apr 2026) | TBD |
 
-**Priority:** Ship Reef (18.x) first, Squid (19.x) second, monitor Tentacle for Phase 4+.
+**Priority:** Ship Squid (19.x) first (stable, most production deployments), then Tentacle (20.x) (current upstream). Add Reef (18.x) as backfill if Ubuntu Noble packages are available. Do NOT invest in Quincy or Pacific.
 
-## Appendix C — Branch Strategy
+**Ubuntu package availability note:** Check `ubuntu.com/server/docs/service-ceph` and `packages.ubuntu.com` for Ceph package availability per Ubuntu LTS before committing to a version target.
+
+## Appendix C — The Archived Upstream Opportunity
+
+The archival of `ceph/ceph-container` (Dec 2024) creates a community vacuum that Canonical can fill:
+
+1. **Community users searching for Ubuntu Ceph images have nowhere to go.** The only active upstream images are CentOS/Rocky Linux from `quay.io/ceph/ceph`. Ubuntu users who want OCI images must either build their own or adopt a non-Ubuntu base.
+
+2. **cephadm defaults to upstream images.** If Canonical can get `ghcr.io/canonical/ceph` listed as an alternative in cephadm documentation, Ubuntu Server installs would naturally pull the Ubuntu image.
+
+3. **Rook has an `image:` field.** Rook's documentation recommends overriding the default CentOS image for Ubuntu-based clusters. This is exactly the use case this project serves — and Rook docs could link directly to this repo.
+
+4. **The Jenkins/Shaman pipeline is not community-forkable.** GitHub Actions CI in this repo is accessible to any contributor. A community that wants to contribute Ubuntu-native Ceph container improvements has no upstream home — this repo can be that home.
+
+**Action:** File issues / open discussions in the Rook and cephadm projects pointing to this repo as the Ubuntu alternative image. Draft a community announcement for ubuntu.com/blog and ceph.io.
+
+## Appendix D — Branch Strategy
 
 ```
 main
-  └─ feature/phase1-reef-noble        ← Phase 1 work
-  └─ feature/phase2-multiarch         ← Phase 2 work
-  └─ feature/phase3-security          ← Phase 3 work
-  └─ feature/phase4-rook-parity       ← Phase 4 work
+  └─ feature/phase1-squid-tentacle-noble   ← Phase 1 work
+  └─ feature/phase2-multiarch              ← Phase 2 work
+  └─ feature/phase3-security              ← Phase 3 work
+  └─ feature/phase4-rook-parity           ← Phase 4 work
 ```
 
 Each phase branch is merged to `main` and triggers a new versioned image publication.
